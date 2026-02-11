@@ -24,24 +24,6 @@ function mse(yTrue, yPred) {
   return tf.losses.meanSquaredError(yTrue, yPred);
 }
 
-// SORTED MSE - Using gather with sort indices (differentiable)
-function sortedMSE(yTrue, yPred) {
-  return tf.tidy(() => {
-    const yTrueFlat = yTrue.flatten();
-    const yPredFlat = yPred.flatten();
-    
-    // Get sort indices
-    const trueSortIdx = tf.topk(yTrueFlat, yTrueFlat.shape[0], true).indices;
-    const predSortIdx = tf.topk(yPredFlat, yPredFlat.shape[0], true).indices;
-    
-    // Gather sorted values
-    const yTrueSorted = tf.gather(yTrueFlat, trueSortIdx);
-    const yPredSorted = tf.gather(yPredFlat, predSortIdx);
-    
-    return tf.losses.meanSquaredError(yTrueSorted, yPredSorted);
-  });
-}
-
 // Smoothness
 function smoothness(yPred) {
   const diffX = yPred
