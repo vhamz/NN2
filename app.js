@@ -92,12 +92,11 @@ function createStudentModel(archType) {
   return model;
 }
 
-// Student Loss with SORTED MSE + smoothness + direction
+// Student Loss - ONLY smoothness + direction (NO MSE!)
 function studentLoss(yTrue, yPred) {
-  const lossSortedMSE = sortedMSE(yTrue, yPred);
-  const lossSmooth = smoothness(yPred).mul(0.1);
-  const lossDir = directionX(yPred).mul(0.1);
-  return lossSortedMSE.add(lossSmooth).add(lossDir);
+  const lossSmooth = smoothness(yPred).mul(10.0); // HUGE weight
+  const lossDir = directionX(yPred).mul(10.0); // HUGE weight
+  return lossSmooth.add(lossDir);
 }
 
 async function trainStep() {
