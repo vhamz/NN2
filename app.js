@@ -1,5 +1,6 @@
 /**
  * Neural Network Design: The Gradient Puzzle
+ * WORKING VERSION - NO TOPK!
  */
 
 const CONFIG = {
@@ -12,7 +13,6 @@ const CONFIG = {
 let state = {
   step: 0,
   isAutoTraining: false,
-  autoTrainInterval: null,
   xInput: null,
   baselineModel: null,
   studentModel: null,
@@ -24,22 +24,32 @@ function mse(yTrue, yPred) {
   return tf.losses.meanSquaredError(yTrue, yPred);
 }
 
-// Smoothness
+// Smoothness - WORKING
 function smoothness(yPred) {
-  const diffX = yPred
-    .slice([0, 0, 0, 0], [-1, -1, 15, -1])
-    .sub(yPred.slice([0, 0, 1, 0], [-1, -1, 15, -1]));
-  const diffY = yPred
-    .slice([0, 0, 0, 0], [-1, 15, -1, -1])
-    .sub(yPred.slice([0, 1, 0, 0], [-1, 15, -1, -1]));
-  return tf.mean(tf.square(diffX)).add(tf.mean(tf.square(diffY)));
+  return tf.tidy(() => {
+    const diffX = tf.sub(
+      yPred.slice([0, 0, 0, 0], [-1, -1, 15, -1]),
+      yPred.slice([0, 0, 1, 0], [-1, -1, 15, -1])
+    );
+    const diffY = tf.sub(
+      yPred.slice([0, 0, 0, 0], [-1, 15, -1, -1]),
+      yPred.slice([0, 1, 0, 0], [-1, 15, -1, -1])
+    );
+    return tf.add(tf.mean(tf.square(diffX)), tf.mean(tf.square(diffY)));
+  });
 }
 
-// Direction
+// Direction - FIXED WITHOUT LINSPACE!
 function directionX(yPred) {
-  const width = 16;
-  const mask = tf.linspace(-1, 1, width).reshape([1, 1, width, 1]);
-  return tf.mean(yPred.mul(mask)).mul(-1);
+  return tf.tidy(() => {
+    // Create manual gradient mask [1, 1, 16, 1]
+    const maskValues = [];
+    for (let i = 0; i < 16; i++) {
+      maskValues.push(-1.0 + (2.0 * i / 15));
+    }
+    const mask = tf.tensor(maskValues).reshape([1, 1, 16, 1]);
+    return tf.mul(-1, tf.mean(tf.mul(yPred, mask)));
+  });
 }
 
 // Baseline Model
@@ -61,31 +71,33 @@ function createStudentModel(archType) {
     model.add(tf.layers.dense({ units: 64, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "transformation") {
-    model.add(tf.layers.dense({units: 256, activation: 'relu'}));
-    model.add(tf.layers.dense({units: 256, activation: 'sigmoid'}));
+    model.add(tf.layers.dense({ units: 256, activation: "relu" }));
+    model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "expansion") {
-    model.add(tf.layers.dense({units: 512, activation: 'relu'}));
-    model.add(tf.layers.dense({units: 256, activation: 'sigmoid'}));
+    model.add(tf.layers.dense({ units: 512, activation: "relu" }));
+    model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else {
-    throw new Error(`Unknown architecture type: ${archType}`);
+    throw new Error(`Unknown architecture: ${archType}`);
   }
 
   model.add(tf.layers.reshape({ targetShape: [16, 16, 1] }));
   return model;
 }
 
-// Student Loss - ONLY smoothness + direction (NO MSE!)
+// Student Loss - Smoothness + Direction ONLY
 function studentLoss(yTrue, yPred) {
-  const lossSmooth = smoothness(yPred).mul(10.0); // HUGE weight
-  const lossDir = directionX(yPred).mul(10.0); // HUGE weight
-  return lossSmooth.add(lossDir);
+  return tf.tidy(() => {
+    const lossSmooth = tf.mul(smoothness(yPred), 1.0);
+    const lossDir = tf.mul(directionX(yPred), 1.0);
+    return tf.add(lossSmooth, lossDir);
+  });
 }
 
 async function trainStep() {
   state.step++;
 
   if (!state.studentModel || !state.studentModel.getWeights) {
-    log("Error: Student model not initialized properly.", true);
+    log("Error: Model not initialized", true);
     stopAutoTrain();
     return;
   }
@@ -109,9 +121,9 @@ async function trainStep() {
       state.optimizer.applyGradients(grads);
       return value.dataSync()[0];
     });
-    log(`Step ${state.step}: Base Loss=${baselineLossVal.toFixed(4)} | Student Loss=${studentLossVal.toFixed(4)}`);
+    log(`Step ${state.step}: Base=${baselineLossVal.toFixed(4)} | Student=${studentLossVal.toFixed(4)}`);
   } catch (e) {
-    log(`Error in Student Training: ${e.message}`, true);
+    log(`Error: ${e.message}`, true);
     stopAutoTrain();
     return;
   }
@@ -139,16 +151,12 @@ function init() {
     });
   });
   
-  log("Initialized. Ready to train.");
+  log("Ready to train");
 }
 
 function resetModels(archType = null) {
-  if (typeof archType !== "string") {
-    archType = null;
-  }
-  if (state.isAutoTraining) {
-    stopAutoTrain();
-  }
+  if (typeof archType !== "string") archType = null;
+  if (state.isAutoTraining) stopAutoTrain();
   if (!archType) {
     const checked = document.querySelector('input[name="arch"]:checked');
     archType = checked ? checked.value : "compression";
@@ -171,13 +179,13 @@ function resetModels(archType = null) {
   try {
     state.studentModel = createStudentModel(archType);
   } catch (e) {
-    log(`Error creating model: ${e.message}`, true);
+    log(`Error: ${e.message}`, true);
     state.studentModel = createBaselineModel();
   }
   
   state.optimizer = tf.train.adam(CONFIG.learningRate);
   state.step = 0;
-  log(`Models reset. Student Arch: ${archType}`);
+  log(`Reset: ${archType}`);
   render();
 }
 
