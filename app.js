@@ -98,23 +98,15 @@ function createStudentModel(archType) {
     model.add(tf.layers.dense({ units: 64, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "transformation") {
-    // [TODO]: Implement Transformation (1:1 mapping)
-    // Hint: Maintain dimension (e.g., hidden layer size approx equal to input size 256)
-    // model.add(tf.layers.dense({units: 256, activation: 'relu'}));
-    // model.add(tf.layers.dense({units: 256, activation: 'sigmoid'}));
-
-    throw new Error(
-      "Transformation architecture NOT implemented yet! (Check app.js TODO-A)",
-    );
+    // [IMPLEMENTED] Transformation (1:1 mapping)
+    // Maintain dimension - same size as input (256)
+    model.add(tf.layers.dense({ units: 256, activation: "relu" }));
+    model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "expansion") {
-    // [TODO]: Implement Expansion (Overcomplete)
-    // Hint: Increase dimension (e.g., hidden layer > 256)
-    // model.add(tf.layers.dense({units: 512, activation: 'relu'}));
-    // model.add(tf.layers.dense({units: 256, activation: 'sigmoid'}));
-
-    throw new Error(
-      "Expansion architecture NOT implemented yet! (Check app.js TODO-A)",
-    );
+    // [IMPLEMENTED] Expansion (Overcomplete)
+    // Increase dimension - larger hidden layer
+    model.add(tf.layers.dense({ units: 512, activation: "relu" }));
+    model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else {
     // Safety check for unknown architectures
     throw new Error(`Unknown architecture type: ${archType}`);
@@ -138,16 +130,14 @@ function studentLoss(yTrue, yPred) {
     // 1. Basic Reconstruction (MSE) - "Be like the input"
     const lossMSE = mse(yTrue, yPred);
 
-    // 2. [TODO] Smoothness - "Be smooth locally"
-    // const lossSmooth = smoothness(yPred).mul(0.0); // Increase weight (e.g., 0.1)
+    // 2. [IMPLEMENTED] Smoothness - "Be smooth locally"
+    const lossSmooth = tf.mul(smoothness(yPred), 0.1); // Weight: 0.1
 
-    // 3. [TODO] Direction - "Be bright on the right"
-    // const lossDir = directionX(yPred).mul(0.0); // Increase weight (e.g., 0.1)
+    // 3. [IMPLEMENTED] Direction - "Be bright on the right"
+    const lossDir = tf.mul(directionX(yPred), 0.1); // Weight: 0.1
 
     // Total Loss
-    // return lossMSE.add(lossSmooth).add(lossDir);
-
-    return lossMSE; // Default: Only MSE
+    return tf.add(tf.add(lossMSE, lossSmooth), lossDir);
   });
 }
 
