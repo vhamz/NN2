@@ -39,6 +39,24 @@ function mse(yTrue, yPred) {
   });
 }
 
+// Sorted MSE: Quantile Loss / Wasserstein Distance
+// Allows pixel movement while preserving color distribution
+function sortedMSE(yTrue, yPred) {
+  return tf.tidy(() => {
+    // Flatten and sort both tensors
+    const yTrueFlat = yTrue.flatten();
+    const yPredFlat = yPred.flatten();
+    
+    // Sort both arrays
+    const yTrueSorted = tf.topk(yTrueFlat, yTrueFlat.shape[0]).values;
+    const yPredSorted = tf.topk(yPredFlat, yPredFlat.shape[0]).values;
+    
+    // MSE on sorted values
+    const diff = tf.sub(yTrueSorted, yPredSorted);
+    return tf.mean(tf.square(diff));
+  });
+}
+
 // TODO: Helper - Smoothness (Total Variation)
 // Penalize differences between adjacent pixels to encourage smoothness.
 function smoothness(yPred) {
@@ -123,12 +141,12 @@ function createStudentModel(archType) {
 // ------------------------------------------------------------------
 // [TODO-B]: STUDENT LOSS DESIGN
 // Modify this function to create a smooth gradient.
-// Currently, it only uses MSE (Identity mapping).
+// Uses Sorted MSE to allow pixel rearrangement.
 // ------------------------------------------------------------------
 function studentLoss(yTrue, yPred) {
   return tf.tidy(() => {
-    // 1. Basic Reconstruction (MSE) - "Be like the input"
-    const lossMSE = mse(yTrue, yPred);
+    // 1. Sorted MSE - Allow pixel movement while preserving colors
+    const lossSortedMSE = sortedMSE(yTrue, yPred);
 
     // 2. [IMPLEMENTED] Smoothness - "Be smooth locally"
     const lossSmooth = tf.mul(smoothness(yPred), 0.1); // Weight: 0.1
@@ -136,8 +154,8 @@ function studentLoss(yTrue, yPred) {
     // 3. [IMPLEMENTED] Direction - "Be bright on the right"
     const lossDir = tf.mul(directionX(yPred), 0.1); // Weight: 0.1
 
-    // Total Loss
-    return tf.add(tf.add(lossMSE, lossSmooth), lossDir);
+    // Total Loss = Sorted MSE + Smoothness + Direction
+    return tf.add(tf.add(lossSortedMSE, lossSmooth), lossDir);
   });
 }
 
