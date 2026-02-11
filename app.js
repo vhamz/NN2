@@ -14,7 +14,7 @@ const CONFIG = {
   inputShapeModel: [16, 16, 1],
   // Data tensor shape (includes batch dim) - used for input tensor creation
   inputShapeData: [1, 16, 16, 1],
-  learningRate: 0.05,
+  learningRate: 0.1, // Increased from 0.05 to 0.1 for faster learning
   autoTrainSpeed: 50, // ms delay between steps (lower is faster)
 };
 
@@ -148,11 +148,11 @@ function studentLoss(yTrue, yPred) {
     // 1. Sorted MSE - Allow pixel movement while preserving colors
     const lossSortedMSE = sortedMSE(yTrue, yPred);
 
-    // 2. [IMPLEMENTED] Smoothness - "Be smooth locally"
-    const lossSmooth = tf.mul(smoothness(yPred), 0.1); // Weight: 0.1
+    // 2. Smoothness - Make it VERY smooth (high weight!)
+    const lossSmooth = tf.mul(smoothness(yPred), 5.0); // Increased from 0.1 to 5.0
 
-    // 3. [IMPLEMENTED] Direction - "Be bright on the right"
-    const lossDir = tf.mul(directionX(yPred), 0.1); // Weight: 0.1
+    // 3. Direction - Strong gradient push (high weight!)
+    const lossDir = tf.mul(directionX(yPred), 5.0); // Increased from 0.1 to 5.0
 
     // Total Loss = Sorted MSE + Smoothness + Direction
     return tf.add(tf.add(lossSortedMSE, lossSmooth), lossDir);
