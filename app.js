@@ -376,7 +376,7 @@ autoTrainBtn.addEventListener('click', () => {
     }
 });
 
-resetBtn.addEventListener('click', () => {
+resetBtn.addEventListener('click', async () => {
     // Stop training
     isTraining = false;
     autoTrainBtn.textContent = 'Auto Train (Start)';
@@ -384,9 +384,19 @@ resetBtn.addEventListener('click', () => {
     // Reset step count
     stepCount = 0;
     
-    // Dispose old models
-    if (baselineModel) baselineModel.dispose();
-    if (studentModel) studentModel.dispose();
+    // Properly dispose old models with tf.dispose
+    await tf.nextFrame();
+    if (baselineModel) {
+        tf.dispose(baselineModel);
+        baselineModel = null;
+    }
+    if (studentModel) {
+        tf.dispose(studentModel);
+        studentModel = null;
+    }
+    
+    // Wait for cleanup
+    await tf.nextFrame();
     
     // Recreate models
     try {
@@ -395,7 +405,11 @@ resetBtn.addEventListener('click', () => {
         studentModel = createStudentModel(selectedArch);
         
         updateCanvases();
-        logStatus(0, 0, 0);
+        
+        const newLog = document.createElement('div');
+        newLog.className = 'status-line';
+        newLog.textContent = '✅ Weights reset';
+        statusLog.insertBefore(newLog, statusLog.firstChild);
         
         console.log('✅ Weights reset');
     } catch (error) {
@@ -405,13 +419,25 @@ resetBtn.addEventListener('click', () => {
 
 // Architecture change handler
 archRadios.forEach(radio => {
-    radio.addEventListener('change', (e) => {
+    radio.addEventListener('change', async (e) => {
         const archType = e.target.value;
         document.getElementById('studentArch').textContent = 
             archType.charAt(0).toUpperCase() + archType.slice(1);
         
+        // Stop training if active
+        isTraining = false;
+        autoTrainBtn.textContent = 'Auto Train (Start)';
+        
+        // Properly dispose student model
+        await tf.nextFrame();
+        if (studentModel) {
+            tf.dispose(studentModel);
+            studentModel = null;
+        }
+        
+        await tf.nextFrame();
+        
         // Recreate student model
-        if (studentModel) studentModel.dispose();
         try {
             studentModel = createStudentModel(archType);
             updateCanvases();
