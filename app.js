@@ -37,20 +37,22 @@ function mse(yTrue, yPred) {
   return tf.losses.meanSquaredError(yTrue, yPred);
 }
 
-// Sorted MSE: Compare sorted pixel distributions instead of pixel-wise.
-// This allows the model to rearrange pixels freely while conserving the color distribution.
+// Sorted MSE: Compare sorted pixel distributions (Quantile Loss / 1D Wasserstein)
+// This frees the model from position constraints — it only needs to conserve
+// the same set of pixel values, not keep them in the same place.
 function sortedMSE(yTrue, yPred) {
+  // Flatten both to 1D, sort, then compute MSE between sorted versions
   const trueFlat = yTrue.reshape([-1]);
   const predFlat = yPred.reshape([-1]);
 
-  // tf.topk returns sorted in descending order; we use it to sort both
-  const { values: trueSorted } = tf.topk(trueFlat, trueFlat.shape[0]);
-  const { values: predSorted } = tf.topk(predFlat, predFlat.shape[0]);
+  // tf.topk returns values in descending order; we reverse for ascending
+  const sortedTrue = tf.topk(trueFlat, trueFlat.shape[0]).values.reverse();
+  const sortedPred = tf.topk(predFlat, predFlat.shape[0]).values.reverse();
 
-  return tf.losses.meanSquaredError(trueSorted, predSorted);
+  return tf.losses.meanSquaredError(sortedTrue, sortedPred);
 }
 
-// Helper - Smoothness (Total Variation)
+// Smoothness (Total Variation Loss)
 // Penalize differences between adjacent pixels to encourage smoothness.
 function smoothness(yPred) {
   // Difference in X direction: pixel[i, j] - pixel[i, j+1]
@@ -67,7 +69,7 @@ function smoothness(yPred) {
   return tf.mean(tf.square(diffX)).add(tf.mean(tf.square(diffY)));
 }
 
-// Helper - Directionality (Gradient)
+// Directionality (Gradient)
 // Encourage pixels on the right to be brighter than pixels on the left.
 function directionX(yPred) {
   // Create a weight mask that increases from left (-1) to right (+1)
@@ -90,13 +92,12 @@ function createBaselineModel() {
   model.add(tf.layers.flatten({ inputShape: CONFIG.inputShapeModel }));
   model.add(tf.layers.dense({ units: 64, activation: "relu" })); // Bottleneck
   model.add(tf.layers.dense({ units: 256, activation: "sigmoid" })); // Output 0-1
-  // Reshape back to [16, 16, 1] (batch dim is handled automatically)
   model.add(tf.layers.reshape({ targetShape: [16, 16, 1] }));
   return model;
 }
 
 // ------------------------------------------------------------------
-// [SOLVED] TODO-A: STUDENT ARCHITECTURE DESIGN
+// [TODO-A]: STUDENT ARCHITECTURE DESIGN ✅ IMPLEMENTED
 // ------------------------------------------------------------------
 function createStudentModel(archType) {
   const model = tf.sequential();
@@ -107,11 +108,14 @@ function createStudentModel(archType) {
     model.add(tf.layers.dense({ units: 64, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "transformation") {
-    // [SOLVED] Transformation: 1:1 mapping, hidden size ≈ input size (256)
+    // ✅ Transformation: 1:1 mapping — hidden size ≈ input size (256)
+    // This gives the model enough capacity to rearrange pixels
+    // without compressing or expanding the representation.
     model.add(tf.layers.dense({ units: 256, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "expansion") {
-    // [SOLVED] Expansion: Overcomplete, hidden size > input size
+    // ✅ Expansion: Overcomplete — hidden size > input size
+    // Even more capacity for complex transformations.
     model.add(tf.layers.dense({ units: 512, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else {
@@ -127,20 +131,23 @@ function createStudentModel(archType) {
 // ==========================================
 
 // ------------------------------------------------------------------
-// [SOLVED] TODO-B: STUDENT LOSS DESIGN
+// [TODO-B]: STUDENT LOSS DESIGN ✅ IMPLEMENTED
 // Combined loss: Sorted MSE + Smoothness + Direction
-// L_total = L_SortedMSE + λ1 * L_Smooth + λ2 * L_Dir
+//
+// - Sorted MSE: conserve the pixel value distribution (rearrange, don't repaint)
+// - Smoothness: make adjacent pixels similar (remove jagged noise)
+// - Direction:  encourage left-dark / right-bright gradient
 // ------------------------------------------------------------------
 function studentLoss(yTrue, yPred) {
   return tf.tidy(() => {
-    // 1. Sorted MSE - conserve pixel distribution but allow rearrangement
+    // 1. Sorted MSE — "Use the same colors, but you can move them anywhere"
     const lossSorted = sortedMSE(yTrue, yPred);
 
-    // 2. Smoothness (Total Variation) - "Be smooth locally"
+    // 2. Smoothness — "Be smooth locally" (Total Variation)
     const lossSmooth = smoothness(yPred).mul(0.1);
 
-    // 3. Direction - "Be bright on the right"
-    const lossDir = directionX(yPred).mul(0.3);
+    // 3. Direction — "Be bright on the right"
+    const lossDir = directionX(yPred).mul(0.1);
 
     // Total Loss
     return lossSorted.add(lossSmooth).add(lossDir);
@@ -154,7 +161,7 @@ function studentLoss(yTrue, yPred) {
 async function trainStep() {
   state.step++;
 
-  // Safety check: Ensure models are initialized
+  // Safety check
   if (!state.studentModel || !state.studentModel.getWeights) {
     log("Error: Student model not initialized properly.", true);
     stopAutoTrain();
@@ -165,7 +172,7 @@ async function trainStep() {
   const baselineLossVal = tf.tidy(() => {
     const { value, grads } = tf.variableGrads(() => {
       const yPred = state.baselineModel.predict(state.xInput);
-      return mse(state.xInput, yPred); // Baseline always uses MSE
+      return mse(state.xInput, yPred);
     }, state.baselineModel.getWeights());
 
     state.optimizer.applyGradients(grads);
@@ -178,7 +185,7 @@ async function trainStep() {
     studentLossVal = tf.tidy(() => {
       const { value, grads } = tf.variableGrads(() => {
         const yPred = state.studentModel.predict(state.xInput);
-        return studentLoss(state.xInput, yPred); // Uses student's custom loss
+        return studentLoss(state.xInput, yPred);
       }, state.studentModel.getWeights());
 
       state.optimizer.applyGradients(grads);
@@ -205,7 +212,7 @@ async function trainStep() {
 // ==========================================
 
 function init() {
-  // 1. Generate fixed noise (Batch size included: [1, 16, 16, 1])
+  // 1. Generate fixed noise
   state.xInput = tf.randomUniform(CONFIG.inputShapeData);
 
   // 2. Initialize Models
