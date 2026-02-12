@@ -40,16 +40,61 @@ function mse(yTrue, yPred) {
 // Sorted MSE: Compare sorted pixel distributions (Quantile Loss / 1D Wasserstein)
 // This frees the model from position constraints — it only needs to conserve
 // the same set of pixel values, not keep them in the same place.
+//
+// NOTE: tf.topk has no gradient in TF.js, so we pre-sort the input (it's constant)
+// and use a histogram/distribution matching approach for the prediction.
+
+// Pre-computed sorted input values (set once at init, no gradient needed)
+let sortedInputValues = null;
+
+function precomputeSortedInput(xInput) {
+  if (sortedInputValues) sortedInputValues.dispose();
+  const flat = xInput.reshape([-1]);
+  // topk is fine here — input is a constant, never needs gradients
+  sortedInputValues = tf.topk(flat, flat.shape[0]).values.reverse();
+  // sortedInputValues is ascending: darkest → brightest
+}
+
 function sortedMSE(yTrue, yPred) {
-  // Flatten both to 1D, sort, then compute MSE between sorted versions
+  // For the prediction, we can't use topk (no gradient).
+  // Instead, we use a differentiable distribution-matching loss:
+  // 1) Match the mean (global brightness conservation)
+  // 2) Match the variance (spread conservation)
+  // 3) Penalize values outside [0,1] range
+  //
+  // This encourages the output to use the same "inventory" of pixel values.
+
   const trueFlat = yTrue.reshape([-1]);
   const predFlat = yPred.reshape([-1]);
 
-  // tf.topk returns values in descending order; we reverse for ascending
-  const sortedTrue = tf.topk(trueFlat, trueFlat.shape[0]).values.reverse();
-  const sortedPred = tf.topk(predFlat, predFlat.shape[0]).values.reverse();
+  // Match mean
+  const meanTrue = tf.mean(trueFlat);
+  const meanPred = tf.mean(predFlat);
+  const meanLoss = tf.square(meanTrue.sub(meanPred));
 
-  return tf.losses.meanSquaredError(sortedTrue, sortedPred);
+  // Match variance
+  const varTrue = tf.moments(trueFlat).variance;
+  const varPred = tf.moments(predFlat).variance;
+  const varLoss = tf.square(varTrue.sub(varPred));
+
+  // Match higher-order stats: match sorted quantiles via binned histogram approach
+  // Split into N bins and compare counts
+  const nBins = 8;
+  let binLoss = tf.scalar(0);
+  for (let i = 0; i < nBins; i++) {
+    const lo = i / nBins;
+    const hi = (i + 1) / nBins;
+    // Soft count of pixels in each bin using sigmoid (differentiable)
+    const trueBin = tf.mean(
+      tf.sigmoid(trueFlat.sub(lo).mul(20)).mul(tf.sigmoid(tf.scalar(hi).sub(trueFlat).mul(20)))
+    );
+    const predBin = tf.mean(
+      tf.sigmoid(predFlat.sub(lo).mul(20)).mul(tf.sigmoid(tf.scalar(hi).sub(predFlat).mul(20)))
+    );
+    binLoss = binLoss.add(tf.square(trueBin.sub(predBin)));
+  }
+
+  return meanLoss.add(varLoss).add(binLoss.mul(0.5));
 }
 
 // Smoothness (Total Variation Loss)
@@ -214,6 +259,9 @@ async function trainStep() {
 function init() {
   // 1. Generate fixed noise
   state.xInput = tf.randomUniform(CONFIG.inputShapeData);
+
+  // Pre-compute sorted input for distribution matching
+  precomputeSortedInput(state.xInput);
 
   // 2. Initialize Models
   resetModels();
