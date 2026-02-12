@@ -1,7 +1,6 @@
 /**
  * Neural Network Design: The Gradient Puzzle
- * All loss computations use only basic tf ops: add, sub, mul, square, mean, slice, reshape
- * No tf.losses.*, no tf.topk, no tf.moments, no tf.scalar inside training
+ * All loss computations use only basic tf ops
  */
 
 var CONFIG = {
@@ -17,49 +16,44 @@ var state = {
   xInput: null,
   baselineModel: null,
   studentModel: null,
-  optimizer: null
+  baselineOptimizer: null,
+  studentOptimizer: null
 };
 
-// Pre-computed direction mask (created once, reused)
-// Shape [1, 1, 16, 1] — values from -1 to +1 across width
+// Pre-computed constants (created once at init)
 var dirMask = null;
 var negOne = null;
-var weight03 = null;
-var weight05 = null;
 
 function createConstants() {
+  // Direction mask: -1 on left to +1 on right, shape [1, 1, 16, 1]
   var vals = [];
   for (var i = 0; i < 16; i++) {
     vals.push(-1 + (2 * i) / 15);
   }
   dirMask = tf.tensor4d([vals.map(function(v) { return [v]; })], [1, 1, 16, 1]);
   negOne = tf.tensor1d([-1]).reshape([]);
-  weight03 = tf.tensor1d([0.3]).reshape([]);
-  weight05 = tf.tensor1d([0.5]).reshape([]);
 }
 
 // ==========================================
-// LOSS HELPERS — pure basic ops only
+// LOSS HELPERS — only basic ops
 // ==========================================
 
-// MSE by hand: mean of squared differences
+// MSE by hand
 function manualMSE(a, b) {
   var diff = a.sub(b);
   return tf.mean(diff.mul(diff));
 }
 
-// Conservation: force output to have same mean & variance as input
+// Conservation: same mean & variance as input
 function conservationLoss(yTrue, yPred) {
   var trueFlat = yTrue.reshape([256]);
   var predFlat = yPred.reshape([256]);
 
-  // Mean matching
   var trueMean = tf.mean(trueFlat);
   var predMean = tf.mean(predFlat);
   var diffMean = trueMean.sub(predMean);
   var meanLoss = diffMean.mul(diffMean);
 
-  // Variance matching (var = mean((x - mean)^2))
   var trueCentered = trueFlat.sub(trueMean);
   var predCentered = predFlat.sub(predMean);
   var trueVar = tf.mean(trueCentered.mul(trueCentered));
@@ -70,15 +64,13 @@ function conservationLoss(yTrue, yPred) {
   return meanLoss.add(varLoss);
 }
 
-// Smoothness: penalize differences between neighboring pixels
+// Smoothness: penalize pixel-to-pixel jumps (Total Variation)
 function smoothnessLoss(yPred) {
-  // Horizontal: difference between pixel[row][col] and pixel[row][col+1]
   var left  = yPred.slice([0, 0, 0, 0], [1, 16, 15, 1]);
   var right = yPred.slice([0, 0, 1, 0], [1, 16, 15, 1]);
   var diffH = left.sub(right);
   var hLoss = tf.mean(diffH.mul(diffH));
 
-  // Vertical: difference between pixel[row][col] and pixel[row+1][col]
   var top    = yPred.slice([0, 0, 0, 0], [1, 15, 16, 1]);
   var bottom = yPred.slice([0, 1, 0, 0], [1, 15, 16, 1]);
   var diffV = top.sub(bottom);
@@ -87,12 +79,9 @@ function smoothnessLoss(yPred) {
   return hLoss.add(vLoss);
 }
 
-// Direction: encourage bright pixels on the right, dark on the left
-// Multiply output by mask [-1...+1] and minimize negative correlation
+// Direction: dark left, bright right
 function directionLoss(yPred) {
   var product = yPred.mul(dirMask);
-  // We want to MAXIMIZE this (bright * positive = good)
-  // So we MINIMIZE the negative
   return tf.mean(product).mul(negOne);
 }
 
@@ -114,12 +103,15 @@ function createStudentModel(archType) {
   model.add(tf.layers.flatten({ inputShape: CONFIG.inputShapeModel }));
 
   if (archType === "compression") {
+    // Bottleneck 256->64->256: loses information, can't rearrange well
     model.add(tf.layers.dense({ units: 64, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "transformation") {
+    // 1:1 mapping 256->256->256: enough capacity to rearrange all pixels
     model.add(tf.layers.dense({ units: 256, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "expansion") {
+    // Overcomplete 256->512->256: extra capacity
     model.add(tf.layers.dense({ units: 512, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else {
@@ -132,14 +124,28 @@ function createStudentModel(archType) {
 
 // ==========================================
 // COMBINED STUDENT LOSS
+// L = conservation * 2.0 + smoothness * 1.0 + direction * 0.3
 // ==========================================
 
 function studentLoss(yTrue, yPred) {
   return tf.tidy(function() {
+    // Conservation: keep the same pixel value distribution
     var lc = conservationLoss(yTrue, yPred);
-    var ls = smoothnessLoss(yPred).mul(weight03);
-    var ld = directionLoss(yPred).mul(weight05);
-    return lc.add(ls).add(ld);
+
+    // Smoothness: be locally consistent (remove noise)
+    var ls = smoothnessLoss(yPred);
+
+    // Direction: dark on left, bright on right
+    var ld = directionLoss(yPred);
+
+    // Weighted sum: conservation is strong to prevent all-white/all-black
+    // smoothness is medium for gradual transitions
+    // direction is gentle nudge
+    return lc.mul(tf.tensor1d([2.0]).reshape([])).add(
+      ls.mul(tf.tensor1d([1.0]).reshape([]))
+    ).add(
+      ld.mul(tf.tensor1d([0.3]).reshape([]))
+    );
   });
 }
 
@@ -156,17 +162,17 @@ async function trainStep() {
     return;
   }
 
-  // Baseline: MSE only
+  // Baseline: MSE only (separate optimizer)
   var baseLoss = tf.tidy(function() {
     var r = tf.variableGrads(function() {
       var pred = state.baselineModel.predict(state.xInput);
       return manualMSE(state.xInput, pred);
     }, state.baselineModel.getWeights());
-    state.optimizer.applyGradients(r.grads);
+    state.baselineOptimizer.applyGradients(r.grads);
     return r.value.dataSync()[0];
   });
 
-  // Student: custom loss
+  // Student: custom loss (separate optimizer)
   var studLoss = 0;
   try {
     studLoss = tf.tidy(function() {
@@ -174,10 +180,10 @@ async function trainStep() {
         var pred = state.studentModel.predict(state.xInput);
         return studentLoss(state.xInput, pred);
       }, state.studentModel.getWeights());
-      state.optimizer.applyGradients(r.grads);
+      state.studentOptimizer.applyGradients(r.grads);
       return r.value.dataSync()[0];
     });
-    log("Step " + state.step + ": Base=" + baseLoss.toFixed(4) + " | Student=" + studLoss.toFixed(4));
+    log("Step " + state.step + " | Base=" + baseLoss.toFixed(4) + " | Student=" + studLoss.toFixed(4));
   } catch (e) {
     log("ERROR: " + e.message, true);
     stopAutoTrain();
@@ -212,7 +218,7 @@ function init() {
     });
   });
 
-  log("Initialized. Ready to train.");
+  log("Initialized. Select Transformation arch and click Auto Train.");
 }
 
 function resetModels(archType) {
@@ -225,7 +231,8 @@ function resetModels(archType) {
 
   if (state.baselineModel) { state.baselineModel.dispose(); state.baselineModel = null; }
   if (state.studentModel) { state.studentModel.dispose(); state.studentModel = null; }
-  if (state.optimizer) { state.optimizer.dispose(); state.optimizer = null; }
+  if (state.baselineOptimizer) { state.baselineOptimizer.dispose(); state.baselineOptimizer = null; }
+  if (state.studentOptimizer) { state.studentOptimizer.dispose(); state.studentOptimizer = null; }
 
   state.baselineModel = createBaselineModel();
   try {
@@ -234,7 +241,10 @@ function resetModels(archType) {
     log("Model error: " + e.message, true);
     state.studentModel = createBaselineModel();
   }
-  state.optimizer = tf.train.adam(CONFIG.learningRate);
+
+  // Separate optimizers so they don't share state between models
+  state.baselineOptimizer = tf.train.adam(CONFIG.learningRate);
+  state.studentOptimizer = tf.train.adam(CONFIG.learningRate);
   state.step = 0;
   log("Reset. Arch: " + archType);
   render();
