@@ -91,20 +91,24 @@ function monotonicX(y) {
 // Student loss (THE MAIN FIX)
 // ==========================================
 function studentLoss(yTrue, yPred) {
+
   return tf.tidy(() => {
-    // 1) conserve pixel values (no new colors)
-    const lSorted = sortedMSE(yTrue, yPred).mul(1.0);
 
-    // 2) make it smooth
-    const lTV = smoothness(yPred).mul(0.08);
+    const lossSorted = sortedMSE(yTrue, yPred).mul(1.0);
 
-    // 3) enforce left→right direction
-    const lDir = directionX(yPred).mul(0.18);
+    // сглаживание слабое
+    const lossSmooth = smoothness(yPred).mul(0.03);
 
-    // 4) (optional but helpful) enforce monotonicity in column means
-    const lMono = monotonicX(yPred).mul(0.12);
+    // направление СИЛЬНОЕ
+    const lossDir = directionX(yPred).mul(0.9);
 
-    return lSorted.add(lTV).add(lDir).add(lMono);
+    // монотонность по колонкам
+    const lossMono = monotonicX(yPred).mul(0.6);
+
+    return lossSorted
+      .add(lossSmooth)
+      .add(lossDir)
+      .add(lossMono);
   });
 }
 
