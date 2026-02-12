@@ -1,57 +1,57 @@
 /**
- * Neural Network Design: The Gradient Puzzle
- * WORKING VERSION (Student: custom loss + proper grads)
+ * Neural Network Design: The Gradient Puzzle (WORKING)
  *
- * Goal:
- * - Do NOT copy pixels (no pixel-wise target).
+ * Student goal:
+ * - Do NOT match pixels position-wise.
  * - Keep the same "inventory" of pixel values (histogram constraint).
- * - Rearrange them into a smooth left→right gradient.
+ * - Rearrange into a smooth left→right gradient.
  *
- * Key:
- *   L = L_sorted + λ_tv * L_tv + λ_dir * L_dir + λ_mono * L_mono
+ * Loss:
+ *   L = sortedMSE(input, output) + λ_tv * TV(output) + λ_dir * Direction(output) + λ_mono * Monotonic(output)
  */
 
 const CONFIG = {
   inputShapeModel: [16, 16, 1],
   inputShapeData: [1, 16, 16, 1],
-  // A bit smaller LR is stabler with non-standard losses
-  learningRate: 0.015,
-  autoTrainSpeed: 40, // ms
+  learningRate: 0.02,     // stable + fast enough
+  autoTrainSpeed: 40,     // ms
 };
 
 let state = {
   step: 0,
   isAutoTraining: false,
-  xInput: null, // fixed noise
+  xInput: null,
   baselineModel: null,
   studentModel: null,
   baselineOptimizer: null,
   studentOptimizer: null,
 };
 
-// ==========================================
+// ===============================
 // Loss components
-// ==========================================
+// ===============================
 function mse(a, b) {
-  return tf.losses.meanSquaredError(a, b);
+  // tf.losses.meanSquaredError returns tensor
+  return tf.mean(tf.square(a.sub(b)));
 }
 
 /**
- * Distribution constraint: compare sorted pixels.
- * This approximates "same histogram" and allows free rearrangement.
+ * Histogram / inventory constraint:
+ * compare sorted pixel lists (position-free).
  */
 function sortedMSE(a, b) {
   return tf.tidy(() => {
-    const sa = tf.sort(a.flatten()); // ascending
+    const sa = tf.sort(a.flatten());
     const sb = tf.sort(b.flatten());
     return tf.mean(tf.square(sa.sub(sb)));
   });
 }
 
 /**
- * Total variation (smoothness): penalize local jumps.
+ * Total variation smoothness:
+ * penalize local changes.
  */
-function smoothness(y) {
+function totalVariation(y) {
   return tf.tidy(() => {
     const dx = y
       .slice([0, 0, 0, 0], [-1, -1, 15, -1])
@@ -64,57 +64,48 @@ function smoothness(y) {
 }
 
 /**
- * Direction: encourage brighter on the right.
- * Maximize mean(y * mask)  => minimize negative.
+ * Direction: brighter on the right
+ * maximize mean(y * mask) => minimize negative
  */
-const DIR_MASK = tf.linspace(-1, 1, 16).reshape([1, 1, 16, 1]); // [1,1,W,1]
+const DIR_MASK = tf.linspace(-1, 1, 16).reshape([1, 1, 16, 1]);
 function directionX(y) {
   return tf.tidy(() => tf.neg(tf.mean(y.mul(DIR_MASK))));
 }
 
 /**
- * Extra "shape" constraint: enforce monotonic increase along x on average.
- * We take column means and penalize negative differences.
+ * Monotonicity: column means should increase left→right.
+ * Penalize negative diffs.
  */
 function monotonicX(y) {
   return tf.tidy(() => {
-    // y: [1,16,16,1]
-    const colMeans = tf.mean(y, [0, 1, 3]); // -> [16]
-    const diffs = colMeans.slice([1], [15]).sub(colMeans.slice([0], [15])); // Δ along x
-    // penalize only if diffs < 0
-    const neg = tf.relu(tf.neg(diffs));
+    const colMeans = tf.mean(y, [0, 1, 3]); // [16]
+    const d = colMeans.slice([1], [15]).sub(colMeans.slice([0], [15])); // [15]
+    const neg = tf.relu(tf.neg(d));
     return tf.mean(tf.square(neg));
   });
 }
 
-// ==========================================
-// Student loss (THE MAIN FIX)
-// ==========================================
-function studentLoss(yTrue, yPred) {
-
+// ===============================
+// Student loss
+// ===============================
+function studentLoss(x, y) {
   return tf.tidy(() => {
+    const lSorted = sortedMSE(x, y).mul(1.0);
 
-    const lossSorted = sortedMSE(yTrue, yPred).mul(1.0);
+    // keep TV not too strong (otherwise you get a "flat blob")
+    const lTV = totalVariation(y).mul(0.03);
 
-    // сглаживание слабое
-    const lossSmooth = smoothness(yPred).mul(0.03);
+    // these two should be strong to force gradient structure
+    const lDir = directionX(y).mul(0.9);
+    const lMono = monotonicX(y).mul(0.6);
 
-    // направление СИЛЬНОЕ
-    const lossDir = directionX(yPred).mul(0.9);
-
-    // монотонность по колонкам
-    const lossMono = monotonicX(yPred).mul(0.6);
-
-    return lossSorted
-      .add(lossSmooth)
-      .add(lossDir)
-      .add(lossMono);
+    return lSorted.add(lTV).add(lDir).add(lMono);
   });
 }
 
-// ==========================================
+// ===============================
 // Models
-// ==========================================
+// ===============================
 function createBaselineModel() {
   const model = tf.sequential();
   model.add(tf.layers.flatten({ inputShape: CONFIG.inputShapeModel }));
@@ -147,31 +138,38 @@ function createStudentModel(archType) {
   return model;
 }
 
-// ==========================================
-// Training
-// ==========================================
+// ===============================
+// Training (IMPORTANT FIX: use trainableWeights vars)
+// ===============================
 async function trainStep() {
   state.step++;
 
-  // Baseline: pixel-wise MSE (identity)
+  // ---- Baseline (pixel-wise MSE) ----
   const baseLossVal = tf.tidy(() => {
-    const vars = state.baselineModel.trainableWeights.map(w => w.val);
+    const varList = state.baselineModel.trainableWeights.map(w => w.val);
+
     const { value, grads } = tf.variableGrads(() => {
-      const yPred = state.baselineModel.predict(state.xInput);
-      return mse(state.xInput, yPred);
-    }, vars);
+      const y = state.baselineModel.apply(state.xInput, { training: true });
+      return mse(state.xInput, y);
+    }, varList);
+
     state.baselineOptimizer.applyGradients(grads);
+
+    // Return a number
     return value.dataSync()[0];
   });
 
-  // Student: custom loss (rearrangement)
+  // ---- Student (custom loss) ----
   const studLossVal = tf.tidy(() => {
-    const vars = state.studentModel.trainableWeights.map(w => w.val);
+    const varList = state.studentModel.trainableWeights.map(w => w.val);
+
     const { value, grads } = tf.variableGrads(() => {
-      const yPred = state.studentModel.predict(state.xInput);
-      return studentLoss(state.xInput, yPred);
-    }, vars);
+      const y = state.studentModel.apply(state.xInput, { training: true });
+      return studentLoss(state.xInput, y);
+    }, varList);
+
     state.studentOptimizer.applyGradients(grads);
+
     return value.dataSync()[0];
   });
 
@@ -183,9 +181,9 @@ async function trainStep() {
   }
 }
 
-// ==========================================
+// ===============================
 // Render
-// ==========================================
+// ===============================
 async function render() {
   const basePred = state.baselineModel.predict(state.xInput);
   const studPred = state.studentModel.predict(state.xInput);
@@ -197,9 +195,9 @@ async function render() {
   studPred.dispose();
 }
 
-// ==========================================
-// UI glue (kept same IDs as index.html)
-// ==========================================
+// ===============================
+// UI helpers
+// ===============================
 function updateLossDisplay(base, stud) {
   document.getElementById("loss-baseline").innerText = `Loss: ${base.toFixed(5)}`;
   document.getElementById("loss-student").innerText = `Loss: ${stud.toFixed(5)}`;
@@ -215,15 +213,17 @@ function log(msg, isError = false) {
 
 function toggleAutoTrain() {
   const btn = document.getElementById("btn-auto");
+
   if (state.isAutoTraining) {
     stopAutoTrain();
-  } else {
-    state.isAutoTraining = true;
-    btn.innerText = "Auto Train (Stop)";
-    btn.classList.add("btn-stop");
-    btn.classList.remove("btn-auto");
-    loop();
+    return;
   }
+
+  state.isAutoTraining = true;
+  btn.innerText = "Auto Train (Stop)";
+  btn.classList.add("btn-stop");
+  btn.classList.remove("btn-auto");
+  loop();
 }
 
 function stopAutoTrain() {
@@ -243,15 +243,14 @@ function resetModels(archType = null) {
     archType = checked ? checked.value : "transformation";
   }
 
-  // Dispose old
   if (state.baselineModel) state.baselineModel.dispose();
   if (state.studentModel) state.studentModel.dispose();
   if (state.baselineOptimizer) state.baselineOptimizer.dispose();
   if (state.studentOptimizer) state.studentOptimizer.dispose();
 
-  // Recreate
   state.baselineModel = createBaselineModel();
   state.studentModel = createStudentModel(archType);
+
   state.baselineOptimizer = tf.train.adam(CONFIG.learningRate);
   state.studentOptimizer = tf.train.adam(CONFIG.learningRate);
 
@@ -260,17 +259,22 @@ function resetModels(archType = null) {
   render();
 }
 
+function loop() {
+  if (!state.isAutoTraining) return;
+  trainStep();
+  setTimeout(loop, CONFIG.autoTrainSpeed);
+}
+
+// ===============================
+// Init
+// ===============================
 function init() {
-  // Fixed noise
   state.xInput = tf.randomUniform(CONFIG.inputShapeData);
 
-  // Render input
   tf.browser.toPixels(state.xInput.squeeze(), document.getElementById("canvas-input"));
 
-  // Init models
   resetModels();
 
-  // Bind events
   document.getElementById("btn-train").addEventListener("click", () => trainStep());
   document.getElementById("btn-auto").addEventListener("click", toggleAutoTrain);
   document.getElementById("btn-reset").addEventListener("click", () => resetModels());
@@ -286,11 +290,4 @@ function init() {
   log("Initialized. Ready to train.");
 }
 
-function loop() {
-  if (!state.isAutoTraining) return;
-  trainStep();
-  setTimeout(loop, CONFIG.autoTrainSpeed);
-}
-
-// Start
 init();
