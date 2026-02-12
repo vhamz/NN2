@@ -41,8 +41,8 @@ function mse(a, b) {
  */
 function sortedMSE(a, b) {
   return tf.tidy(() => {
-    const sa = tf.sort(a.flatten());
-    const sb = tf.sort(b.flatten());
+    const sa = a.flatten().sort();
+    const sb = b.flatten().sort();
     return tf.mean(tf.square(sa.sub(sb)));
   });
 }
