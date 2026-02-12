@@ -1,3 +1,4 @@
+
 /**
  * Neural Network Design: The Gradient Puzzle
  *
@@ -25,7 +26,8 @@ let state = {
   xInput: null, // The fixed noise input
   baselineModel: null,
   studentModel: null,
-  optimizer: null,
+  baselineOptimizer: null,
+  studentOptimizer: null,
 };
 
 // ==========================================
@@ -96,11 +98,11 @@ function createStudentModel(archType) {
     model.add(tf.layers.dense({ units: 64, activation: "relu" }));
     model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
   } else if (archType === "transformation") {
-    // Transformation (1:1 mapping): hidden layer size = input size 256
+    // Transformation (1:1 mapping): hidden = input size
     model.add(tf.layers.dense({units: 256, activation: 'relu'}));
     model.add(tf.layers.dense({units: 256, activation: 'sigmoid'}));
   } else if (archType === "expansion") {
-    // Expansion (Overcomplete): hidden layer > 256
+    // Expansion (Overcomplete): hidden > input size
     model.add(tf.layers.dense({units: 512, activation: 'relu'}));
     model.add(tf.layers.dense({units: 256, activation: 'sigmoid'}));
   } else {
@@ -123,16 +125,9 @@ function createStudentModel(archType) {
 // ------------------------------------------------------------------
 function studentLoss(yTrue, yPred) {
   return tf.tidy(() => {
-    // 1. Basic Reconstruction (MSE) - "Be like the input"
     const lossMSE = mse(yTrue, yPred);
-
-    // 2. Smoothness - "Be smooth locally"
     const lossSmooth = smoothness(yPred).mul(0.5);
-
-    // 3. Direction - "Be bright on the right"
     const lossDir = directionX(yPred).mul(0.3);
-
-    // Total Loss
     return lossMSE.add(lossSmooth).add(lossDir);
   });
 }
@@ -159,7 +154,7 @@ async function trainStep() {
       return mse(state.xInput, yPred); // Baseline always uses MSE
     }, state.baselineModel.getWeights());
 
-    state.optimizer.applyGradients(grads);
+    state.baselineOptimizer.applyGradients(grads);
     return value.dataSync()[0];
   });
 
@@ -169,10 +164,10 @@ async function trainStep() {
     studentLossVal = tf.tidy(() => {
       const { value, grads } = tf.variableGrads(() => {
         const yPred = state.studentModel.predict(state.xInput);
-        return studentLoss(state.xInput, yPred); // Uses student's custom loss
+        return studentLoss(state.xInput, yPred);
       }, state.studentModel.getWeights());
 
-      state.optimizer.applyGradients(grads);
+      state.studentOptimizer.applyGradients(grads);
       return value.dataSync()[0];
     });
     log(
@@ -254,10 +249,13 @@ function resetModels(archType = null) {
     state.studentModel.dispose();
     state.studentModel = null;
   }
-  // Important: Dispose optimizer because it holds references to old model variables.
-  if (state.optimizer) {
-    state.optimizer.dispose();
-    state.optimizer = null;
+  if (state.baselineOptimizer) {
+    state.baselineOptimizer.dispose();
+    state.baselineOptimizer = null;
+  }
+  if (state.studentOptimizer) {
+    state.studentOptimizer.dispose();
+    state.studentOptimizer = null;
   }
 
   // Create New Models
@@ -269,8 +267,8 @@ function resetModels(archType = null) {
     state.studentModel = createBaselineModel(); // Fallback to avoid crash
   }
 
-  // Create new optimizer (must be done AFTER models are created)
-  state.optimizer = tf.train.adam(CONFIG.learningRate);
+  state.baselineOptimizer = tf.train.adam(CONFIG.learningRate);
+  state.studentOptimizer = tf.train.adam(CONFIG.learningRate);
   state.step = 0;
 
   log(`Models reset. Student Arch: ${archType}`);
