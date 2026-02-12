@@ -1,14 +1,7 @@
 /**
  * Neural Network Design: The Gradient Puzzle
- *
- * Objective:
- * Modify the Student Model architecture and loss function to transform
- * random noise input into a smooth, directional gradient output.
  */
 
-// ==========================================
-// 1. Global State & Config
-// ==========================================
 const CONFIG = {
   inputShapeModel: [16, 16, 1],
   inputShapeData: [1, 16, 16, 1],
@@ -19,7 +12,6 @@ const CONFIG = {
 let state = {
   step: 0,
   isAutoTraining: false,
-  autoTrainInterval: null,
   xInput: null,
   baselineModel: null,
   studentModel: null,
@@ -27,80 +19,51 @@ let state = {
 };
 
 // ==========================================
-// 2. Helper Functions (Loss Components)
+// Helper Functions (ALL fully differentiable)
 // ==========================================
 
-// Standard MSE
 function mse(yTrue, yPred) {
   return tf.losses.meanSquaredError(yTrue, yPred);
 }
 
-// -------------------------------------------------------
-// Distribution Matching Loss (differentiable Sorted MSE alternative)
-// -------------------------------------------------------
-// tf.topk has NO gradient in TF.js, so we cannot sort inside training.
-// Instead we match the pixel value distribution:
-//   - Match mean (conserve average brightness)
-//   - Match variance (conserve spread)
-//   - Soft histogram matching (conserve distribution shape)
-function distributionLoss(yTrue, yPred) {
-  const trueFlat = yTrue.reshape([-1]);
-  const predFlat = yPred.reshape([-1]);
+// Distribution conservation: match mean and variance of pixel values
+// This replaces Sorted MSE — same idea ("keep same colors") but differentiable
+function conservationLoss(yTrue, yPred) {
+  var trueFlat = yTrue.reshape([-1]);
+  var predFlat = yPred.reshape([-1]);
 
-  // 1) Match mean
-  const trueMean = tf.mean(trueFlat);
-  const predMean = tf.mean(predFlat);
-  const meanLoss = tf.square(trueMean.sub(predMean));
+  var trueMean = tf.mean(trueFlat);
+  var predMean = tf.mean(predFlat);
+  var meanLoss = tf.square(trueMean.sub(predMean));
 
-  // 2) Match variance
-  const trueVar = tf.mean(tf.square(trueFlat.sub(trueMean)));
-  const predVar = tf.mean(tf.square(predFlat.sub(predMean)));
-  const varLoss = tf.square(trueVar.sub(predVar));
+  var trueVar = tf.mean(tf.square(trueFlat.sub(trueMean)));
+  var predVar = tf.mean(tf.square(predFlat.sub(predMean)));
+  var varLoss = tf.square(trueVar.sub(predVar));
 
-  // 3) Soft histogram matching — 8 bins with sigmoid gates
-  const nBins = 8;
-  let histLoss = tf.scalar(0);
-  for (let i = 0; i < nBins; i++) {
-    const lo = i / nBins;
-    const hi = (i + 1) / nBins;
-    const trueCount = tf.mean(
-      tf.sigmoid(trueFlat.sub(lo).mul(20.0))
-        .mul(tf.sigmoid(tf.scalar(hi).sub(trueFlat).mul(20.0)))
-    );
-    const predCount = tf.mean(
-      tf.sigmoid(predFlat.sub(lo).mul(20.0))
-        .mul(tf.sigmoid(tf.scalar(hi).sub(predFlat).mul(20.0)))
-    );
-    histLoss = histLoss.add(tf.square(trueCount.sub(predCount)));
-  }
-
-  return meanLoss.add(varLoss).add(histLoss.mul(0.5));
+  return meanLoss.add(varLoss);
 }
 
-// Smoothness (Total Variation Loss)
+// Smoothness: Total Variation — penalize pixel-to-pixel jumps
 function smoothness(yPred) {
-  const diffX = yPred
-    .slice([0, 0, 0, 0], [-1, -1, 15, -1])
+  var diffX = yPred.slice([0, 0, 0, 0], [-1, -1, 15, -1])
     .sub(yPred.slice([0, 0, 1, 0], [-1, -1, 15, -1]));
-  const diffY = yPred
-    .slice([0, 0, 0, 0], [-1, 15, -1, -1])
+  var diffY = yPred.slice([0, 0, 0, 0], [-1, 15, -1, -1])
     .sub(yPred.slice([0, 1, 0, 0], [-1, 15, -1, -1]));
   return tf.mean(tf.square(diffX)).add(tf.mean(tf.square(diffY)));
 }
 
-// Directionality — left-dark, right-bright
+// Direction: encourage dark-left, bright-right
 function directionX(yPred) {
-  const width = 16;
-  const mask = tf.linspace(-1, 1, width).reshape([1, 1, width, 1]);
+  var mask = tf.linspace(-1, 1, 16).reshape([1, 1, 16, 1]);
   return tf.mean(yPred.mul(mask)).mul(-1);
 }
 
 // ==========================================
-// 3. Model Architecture
+// Model Architecture
 // ==========================================
 
 function createBaselineModel() {
-  const model = tf.sequential();
+  var model = tf.sequential();
   model.add(tf.layers.flatten({ inputShape: CONFIG.inputShapeModel }));
   model.add(tf.layers.dense({ units: 64, activation: "relu" }));
   model.add(tf.layers.dense({ units: 256, activation: "sigmoid" }));
@@ -108,9 +71,8 @@ function createBaselineModel() {
   return model;
 }
 
-// [TODO-A] All three architecture types implemented
 function createStudentModel(archType) {
-  const model = tf.sequential();
+  var model = tf.sequential();
   model.add(tf.layers.flatten({ inputShape: CONFIG.inputShapeModel }));
 
   if (archType === "compression") {
@@ -131,52 +93,53 @@ function createStudentModel(archType) {
 }
 
 // ==========================================
-// 4. Custom Loss Function
+// Custom Loss
 // ==========================================
 
-// [TODO-B] Custom loss: Distribution + Smoothness + Direction
 function studentLoss(yTrue, yPred) {
   return tf.tidy(function() {
-    var lossDist = distributionLoss(yTrue, yPred);
-    var lossSmooth = smoothness(yPred).mul(0.1);
-    var lossDir = directionX(yPred).mul(0.1);
-    return lossDist.add(lossSmooth).add(lossDir);
+    // Conservation: keep the same distribution of pixel values
+    var lossConserve = conservationLoss(yTrue, yPred).mul(1.0);
+    // Smoothness: be locally consistent
+    var lossSmooth = smoothness(yPred).mul(0.3);
+    // Direction: dark left, bright right
+    var lossDir = directionX(yPred).mul(0.5);
+    return lossConserve.add(lossSmooth).add(lossDir);
   });
 }
 
 // ==========================================
-// 5. Training Loop
+// Training Loop
 // ==========================================
 
 async function trainStep() {
   state.step++;
 
   if (!state.studentModel || !state.studentModel.getWeights) {
-    log("Error: Student model not initialized properly.", true);
+    log("Error: Student model not initialized.", true);
     stopAutoTrain();
     return;
   }
 
   var baselineLossVal = tf.tidy(function() {
-    var result = tf.variableGrads(function() {
-      var yPred = state.baselineModel.predict(state.xInput);
-      return mse(state.xInput, yPred);
+    var r = tf.variableGrads(function() {
+      return mse(state.xInput, state.baselineModel.predict(state.xInput));
     }, state.baselineModel.getWeights());
-    state.optimizer.applyGradients(result.grads);
-    return result.value.dataSync()[0];
+    state.optimizer.applyGradients(r.grads);
+    return r.value.dataSync()[0];
   });
 
   var studentLossVal = 0;
   try {
     studentLossVal = tf.tidy(function() {
-      var result = tf.variableGrads(function() {
-        var yPred = state.studentModel.predict(state.xInput);
-        return studentLoss(state.xInput, yPred);
+      var r = tf.variableGrads(function() {
+        return studentLoss(state.xInput, state.studentModel.predict(state.xInput));
       }, state.studentModel.getWeights());
-      state.optimizer.applyGradients(result.grads);
-      return result.value.dataSync()[0];
+      state.optimizer.applyGradients(r.grads);
+      return r.value.dataSync()[0];
     });
-    log("Step " + state.step + ": Base Loss=" + baselineLossVal.toFixed(4) + " | Student Loss=" + studentLossVal.toFixed(4));
+    log("Step " + state.step + ": Base Loss=" + baselineLossVal.toFixed(4) +
+        " | Student Loss=" + studentLossVal.toFixed(4));
   } catch (e) {
     log("Error in Student Training: " + e.message, true);
     stopAutoTrain();
@@ -190,17 +153,13 @@ async function trainStep() {
 }
 
 // ==========================================
-// 6. UI & Initialization
+// UI
 // ==========================================
 
 function init() {
   state.xInput = tf.randomUniform(CONFIG.inputShapeData);
   resetModels();
-
-  tf.browser.toPixels(
-    state.xInput.squeeze(),
-    document.getElementById("canvas-input")
-  );
+  tf.browser.toPixels(state.xInput.squeeze(), document.getElementById("canvas-input"));
 
   document.getElementById("btn-train").addEventListener("click", function() { trainStep(); });
   document.getElementById("btn-auto").addEventListener("click", toggleAutoTrain);
