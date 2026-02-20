@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neural Network Design: The Gradient Puzzle</title>
+    <style>
+        body {
+            background: #1e1e2f;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            color: #bb86fc;
+            margin-bottom: 5px;
+        }
+        .sub {
+            color: #aaa;
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+        }
+        .panel {
+            background: #2d2d3a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-items: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        button {
+            background: #3a3a4f;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #5a5a7a;
+        }
+        button.primary {
+            background: #bb86fc;
+            color: #000;
+        }
+        button.primary:hover {
+            background: #dbbaff;
+        }
+        .radio-group {
+            display: flex;
+            gap: 20px;
+            background: #252533;
+            padding: 8px 15px;
+            border-radius: 20px;
+        }
+        .radio-group label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .canvas-grid {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .canvas-item {
+            text-align: center;
+            background: #2d2d3a;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        canvas {
+            display: block;
+            margin: 10px auto;
+            border: 2px solid #3a3a4f;
+            image-rendering: pixelated;
+            width: 160px;
+            height: 160px;
+        }
+        .log {
+            background: #2d2d3a;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            height: 100px;
+            overflow-y: auto;
+            border-left: 4px solid #bb86fc;
+        }
+        .log .error {
+            color: #ff6b6b;
+        }
+        .log .info {
+            color: #6bff6b;
+        }
+        footer {
+            margin-top: 20px;
+            font-size: 0.8rem;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧩 Neural Network Design: The Gradient Puzzle</h1>
+    <div class="sub">Loss function = rule of the game — the student model transforms noise into a smooth gradient</div>
+
+    <div class="container">
+        <div class="panel">
+            <div class="button-group">
+                <button id="trainStep" class="primary">Train 1 Step</button>
+                <button id="autoTrain">▶ Auto Train</button>
+                <button id="reset">⟲ Reset Weights</button>
+            </div>
+            <div class="radio-group" id="archSelector">
+                <label><input type="radio" name="arch" value="compression" checked> Compression</label>
+                <label><input type="radio" name="arch" value="transformation"> Transformation</label>
+                <label><input type="radio" name="arch" value="expansion"> Expansion</label>
+            </div>
+        </div>
+
+        <div class="canvas-grid">
+            <div class="canvas-item">
+                <div>🎲 Input (fixed noise)</div>
+                <canvas id="canvasInput" width="16" height="16"></canvas>
+            </div>
+            <div class="canvas-item">
+                <div>📉 Baseline (MSE only)</div>
+                <canvas id="canvasBaseline" width="16" height="16"></canvas>
+            </div>
+            <div class="canvas-item">
+                <div>🧪 Student (custom loss + architecture)</div>
+                <canvas id="canvasStudent" width="16" height="16"></canvas>
+            </div>
+        </div>
+
+        <div class="log" id="logArea">
+            > Ready. Step 0 | Baseline loss: — | Student loss: —<br>
+        </div>
+    </div>
+
+    <footer>✨ Student loss: MSE + 0.1*smoothness + 0.01*direction. Try different architectures!</footer>
+
+    <!-- TensorFlow.js and main script -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
